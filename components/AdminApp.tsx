@@ -32,6 +32,27 @@ const STATUS_TEXT: Record<AttendanceStatus, string> = {
   declined: "Não vai"
 };
 
+function buildStatsFromInvites(invites: Invite[]): DashboardStats {
+  const stats: DashboardStats = {
+    totalPeople: 0,
+    totalInvites: invites.length,
+    confirmed: 0,
+    pending: 0,
+    declined: 0
+  };
+
+  for (const invite of invites) {
+    for (const person of invite.people) {
+      stats.totalPeople += 1;
+      if (person.status === "confirmed") stats.confirmed += 1;
+      else if (person.status === "declined") stats.declined += 1;
+      else stats.pending += 1;
+    }
+  }
+
+  return stats;
+}
+
 export default function AdminApp() {
   const [checkingSession, setCheckingSession] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -77,19 +98,40 @@ export default function AdminApp() {
     }
   }
 
-  async function loadAll() {
-    setLoadingData(true);
+  function setInvitesAndStats(nextInvites: Invite[]) {
+    setInvites(nextInvites);
+    setStats(buildStatsFromInvites(nextInvites));
+  }
+
+  function mergeInvite(updatedInvite: Invite) {
+    setInvites((current) => {
+      const exists = current.some((invite) => invite.id === updatedInvite.id);
+      const nextInvites = exists
+        ? current.map((invite) => (invite.id === updatedInvite.id ? updatedInvite : invite))
+        : [updatedInvite, ...current];
+
+      setStats(buildStatsFromInvites(nextInvites));
+      return nextInvites;
+    });
+  }
+
+  function removeInvite(inviteId: string) {
+    setInvites((current) => {
+      const nextInvites = current.filter((invite) => invite.id !== inviteId);
+      setStats(buildStatsFromInvites(nextInvites));
+      return nextInvites;
+    });
+  }
+
+  async function loadAll(options?: { withLoader?: boolean }) {
+    const withLoader = options?.withLoader ?? true;
+    if (withLoader) setLoadingData(true);
     try {
-      const [statsRes, invitesRes] = await Promise.all([
-        fetch("/api/admin/stats", { cache: "no-store" }),
-        fetch("/api/admin/invites", { cache: "no-store" })
-      ]);
-      const statsData = await statsRes.json();
+      const invitesRes = await fetch("/api/admin/invites", { cache: "no-store" });
       const invitesData = await invitesRes.json();
-      setStats(statsData.stats || null);
-      setInvites(invitesData.invites || []);
+      setInvitesAndStats(invitesData.invites || []);
     } finally {
-      setLoadingData(false);
+      if (withLoader) setLoadingData(false);
     }
   }
 
@@ -154,7 +196,8 @@ export default function AdminApp() {
       setNewResponsible("");
       setNewWhatsapp("");
       setNewPeople("");
-      await loadAll();
+      if (data.invite) mergeInvite(data.invite);
+      else await loadAll({ withLoader: false });
     } finally {
       setCreating(false);
     }
@@ -191,7 +234,8 @@ export default function AdminApp() {
         return;
       }
       setEditTarget(null);
-      await loadAll();
+      if (data.invite) mergeInvite(data.invite);
+      else await loadAll({ withLoader: false });
     } finally {
       setSavingEdit(false);
     }
@@ -199,40 +243,51 @@ export default function AdminApp() {
 
   async function confirmDelete() {
     if (!deleteTarget) return;
-    await fetch(`/api/admin/invites/${deleteTarget.id}`, { method: "DELETE" });
+    const deletedId = deleteTarget.id;
+    await fetch(`/api/admin/invites/${deletedId}`, { method: "DELETE" });
     setDeleteTarget(null);
-    await loadAll();
+    if (historyTarget?.id === deletedId) {
+      setHistoryTarget(null);
+      setHistory([]);
+    }
+    removeInvite(deletedId);
   }
 
   async function confirmAddPerson() {
     if (!addPersonTarget || !addPersonName.trim()) return;
-    await fetch(`/api/admin/invites/${addPersonTarget.id}/people`, {
+    const res = await fetch(`/api/admin/invites/${addPersonTarget.id}/people`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: addPersonName })
     });
+    const data = await res.json().catch(() => ({}));
     setAddPersonTarget(null);
     setAddPersonName("");
-    await loadAll();
+    if (res.ok && data.invite) mergeInvite(data.invite);
+    else await loadAll({ withLoader: false });
   }
 
   async function confirmRemovePerson() {
     if (!removePersonTarget) return;
-    await fetch(`/api/admin/invites/${removePersonTarget.invite.id}/people/${removePersonTarget.person.id}`, {
+    const res = await fetch(`/api/admin/invites/${removePersonTarget.invite.id}/people/${removePersonTarget.person.id}`, {
       method: "DELETE"
     });
+    const data = await res.json().catch(() => ({}));
     setRemovePersonTarget(null);
-    await loadAll();
+    if (res.ok && data.invite) mergeInvite(data.invite);
+    else await loadAll({ withLoader: false });
   }
 
   async function overridePersonStatus(invite: Invite, person: Person, status: AttendanceStatus) {
     if (person.status === status) return;
-    await fetch(`/api/admin/invites/${invite.id}/people/${person.id}`, {
+    const res = await fetch(`/api/admin/invites/${invite.id}/people/${person.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status })
     });
-    await loadAll();
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.invite) mergeInvite(data.invite);
+    else await loadAll({ withLoader: false });
   }
 
   async function openHistory(invite: Invite) {

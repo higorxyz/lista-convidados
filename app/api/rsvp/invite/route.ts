@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { addHistoryEntry, getInvite, setPersonStatus } from "@/lib/invites";
+import { addHistoryEntry, getInvite, setPeopleStatuses } from "@/lib/invites";
 import { verifyInviteToken } from "@/lib/guestToken";
 import { isDeadlinePassed, RSVP_DEADLINE_LABEL } from "@/lib/deadline";
 import { AttendanceStatus, GuestInviteView } from "@/lib/types";
@@ -57,10 +57,26 @@ export async function PATCH(req: NextRequest) {
   }
 
   const body = await req.json().catch(() => ({}));
-  const personId = typeof body.personId === "string" ? body.personId : "";
-  const status = body.status as AttendanceStatus;
+  const rawUpdates = Array.isArray(body.updates)
+    ? body.updates
+    : [{ personId: typeof body.personId === "string" ? body.personId : "", status: body.status }];
 
-  if (!personId || (status !== "confirmed" && status !== "declined" && status !== "pending")) {
+  const updates: Array<{ personId: string; status: AttendanceStatus }> = [];
+  const updatesMap = new Map<string, AttendanceStatus>();
+
+  for (const item of rawUpdates) {
+    const personId = typeof item?.personId === "string" ? item.personId.trim() : "";
+    const status = item?.status as AttendanceStatus;
+    if (!personId) continue;
+    if (status !== "confirmed" && status !== "declined" && status !== "pending") continue;
+    updatesMap.set(personId, status);
+  }
+
+  for (const [personId, status] of updatesMap.entries()) {
+    updates.push({ personId, status });
+  }
+
+  if (updates.length === 0) {
     return NextResponse.json({ error: "Requisição inválida." }, { status: 400 });
   }
 
@@ -70,17 +86,25 @@ export async function PATCH(req: NextRequest) {
   }
 
   // Guard: the person being updated must actually belong to this invite.
-  const belongsToInvite = invite.people.some((p) => p.id === personId);
-  if (!belongsToInvite) {
-    return NextResponse.json({ error: "Convidado não encontrado neste convite." }, { status: 404 });
+  const peopleMap = new Map(invite.people.map((p) => [p.id, p]));
+  for (const update of updates) {
+    if (!peopleMap.has(update.personId)) {
+      return NextResponse.json({ error: "Convidado não encontrado neste convite." }, { status: 404 });
+    }
   }
 
-  const result = await setPersonStatus(inviteId, personId, status);
+  const result = await setPeopleStatuses(inviteId, updates);
   if (!result) {
     return NextResponse.json({ error: "Convidado não encontrado." }, { status: 404 });
   }
 
-  await addHistoryEntry(inviteId, invite.responsibleName, `${invite.responsibleName} ${STATUS_LABEL[status]} de ${result.person.name}.`);
+  for (const person of result.updatedPeople) {
+    await addHistoryEntry(
+      inviteId,
+      invite.responsibleName,
+      `${invite.responsibleName} ${STATUS_LABEL[person.status]} de ${person.name}.`
+    );
+  }
 
   const view: GuestInviteView = {
     responsibleName: result.invite.responsibleName,

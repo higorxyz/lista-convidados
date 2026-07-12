@@ -183,6 +183,47 @@ export async function setPersonStatus(
   return { invite: updated, person: updatedPerson };
 }
 
+export async function setPeopleStatuses(
+  inviteId: string,
+  updates: Array<{ personId: string; status: AttendanceStatus }>
+): Promise<{ invite: Invite; updatedPeople: Person[] } | null> {
+  const current = await getInvite(inviteId);
+  if (!current) return null;
+
+  const updatesMap = new Map<string, AttendanceStatus>();
+  for (const update of updates) {
+    updatesMap.set(update.personId, update.status);
+  }
+
+  const now = Date.now();
+  const updatedPeople: Person[] = [];
+  const people = current.people.map((person) => {
+    const nextStatus = updatesMap.get(person.id);
+    if (!nextStatus || nextStatus === person.status) return person;
+
+    const updatedPerson: Person = {
+      ...person,
+      status: nextStatus,
+      updatedAt: now
+    };
+    updatedPeople.push(updatedPerson);
+    return updatedPerson;
+  });
+
+  if (updatedPeople.length === 0) {
+    return { invite: current, updatedPeople: [] };
+  }
+
+  const updatedInvite: Invite = {
+    ...current,
+    people,
+    updatedAt: now
+  };
+
+  await saveInvite(updatedInvite);
+  return { invite: updatedInvite, updatedPeople };
+}
+
 /**
  * Finds the single invite whose WhatsApp number ends with the given 4 digits.
  * Returns "ambiguous" if more than one invite matches (should not normally happen)

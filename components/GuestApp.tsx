@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { AttendanceStatus, GuestInviteView, Person } from "@/lib/types";
+import { AttendanceStatus, GuestInviteView } from "@/lib/types";
 
 type Step = "search" | "confirm" | "checklist";
 
@@ -22,7 +22,9 @@ export default function GuestApp() {
 
   const [invite, setInvite] = useState<GuestInviteView | null>(null);
   const [loadingInvite, setLoadingInvite] = useState(false);
-  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [draftStatuses, setDraftStatuses] = useState<Record<string, AttendanceStatus>>({});
+  const [savingEdits, setSavingEdits] = useState(false);
+  const [showThanksModal, setShowThanksModal] = useState(false);
   const [actionError, setActionError] = useState("");
 
   const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
@@ -109,6 +111,11 @@ export default function GuestApp() {
         return;
       }
       setInvite(data.invite);
+      const initialDraft: Record<string, AttendanceStatus> = {};
+      for (const person of data.invite.people || []) {
+        initialDraft[person.id] = person.status;
+      }
+      setDraftStatuses(initialDraft);
       setStep("checklist");
     } catch (e) {
       console.error(e);
@@ -118,28 +125,62 @@ export default function GuestApp() {
     }
   }
 
-  async function updateStatus(person: Person, status: AttendanceStatus) {
-    if (!token || !invite) return;
-    if (person.status === status) return;
-    setUpdatingId(person.id);
+  function selectStatus(personId: string, status: AttendanceStatus) {
+    setDraftStatuses((current) => ({
+      ...current,
+      [personId]: status
+    }));
+  }
+
+  function goBackFromChecklist() {
+    setActionError("");
+    setStep("confirm");
+  }
+
+  async function saveEdits() {
+    if (!token || !invite || invite.deadlinePassed) return;
+
+    const updates = invite.people
+      .map((person) => ({
+        personId: person.id,
+        status: draftStatuses[person.id] ?? person.status,
+        previousStatus: person.status
+      }))
+      .filter((item) => item.status !== item.previousStatus)
+      .map((item) => ({ personId: item.personId, status: item.status }));
+
+    if (updates.length === 0) {
+      setActionError("");
+      setShowThanksModal(true);
+      return;
+    }
+
+    setSavingEdits(true);
     setActionError("");
     try {
       const res = await fetch("/api/rsvp/invite", {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ personId: person.id, status })
+        body: JSON.stringify({ updates })
       });
       const data = await res.json();
       if (!res.ok) {
         setActionError(data.error || "Não foi possível salvar agora. Tente novamente.");
         return;
       }
+
       setInvite(data.invite);
+      const syncedDraft: Record<string, AttendanceStatus> = {};
+      for (const person of data.invite.people || []) {
+        syncedDraft[person.id] = person.status;
+      }
+      setDraftStatuses(syncedDraft);
+      setShowThanksModal(true);
     } catch (e) {
       console.error(e);
       setActionError("Não foi possível salvar agora. Tente novamente.");
     } finally {
-      setUpdatingId(null);
+      setSavingEdits(false);
     }
   }
 
@@ -213,21 +254,21 @@ export default function GuestApp() {
                 <div className="person-row" key={person.id}>
                   <div>
                     <div className="person-name">{person.name}</div>
-                    <span className={`status-badge ${person.status}`}>{STATUS_TEXT[person.status]}</span>
+                    <span className={`status-badge ${draftStatuses[person.id] ?? person.status}`}>
+                      {STATUS_TEXT[draftStatuses[person.id] ?? person.status]}
+                    </span>
                   </div>
                   {!invite.deadlinePassed && (
                     <div className="person-actions">
                       <button
-                        className={`pill ${person.status === "confirmed" ? "active-confirmed" : ""}`}
-                        onClick={() => updateStatus(person, "confirmed")}
-                        disabled={updatingId === person.id}
+                        className={`pill ${(draftStatuses[person.id] ?? person.status) === "confirmed" ? "active-confirmed" : ""}`}
+                        onClick={() => selectStatus(person.id, "confirmed")}
                       >
                         Confirmar
                       </button>
                       <button
-                        className={`pill ${person.status === "declined" ? "active-declined" : ""}`}
-                        onClick={() => updateStatus(person, "declined")}
-                        disabled={updatingId === person.id}
+                        className={`pill ${(draftStatuses[person.id] ?? person.status) === "declined" ? "active-declined" : ""}`}
+                        onClick={() => selectStatus(person.id, "declined")}
                       >
                         Não vai
                       </button>
@@ -238,8 +279,37 @@ export default function GuestApp() {
             </div>
 
             {!invite.deadlinePassed && (
-              <div className="deadline-note">Alterações permitidas até {invite.deadline}</div>
+              <>
+                <div className="deadline-note">Alterações permitidas até {invite.deadline}</div>
+                <div className="checklist-actions">
+                  <button className="btn btn-ghost" onClick={goBackFromChecklist} disabled={savingEdits}>
+                    Voltar
+                  </button>
+                  <button className="btn btn-primary" onClick={saveEdits} disabled={savingEdits}>
+                    {savingEdits ? "Salvando…" : "Confirmar edições"}
+                  </button>
+                </div>
+              </>
             )}
+          </div>
+        </div>
+      )}
+
+      {showThanksModal && (
+        <div className="overlay" onClick={(e) => e.target === e.currentTarget && setShowThanksModal(false)}>
+          <div className="modal">
+            <button className="close-x" onClick={() => setShowThanksModal(false)}>
+              &times;
+            </button>
+            <h3>Obrigado por confirmar!</h3>
+            <p className="hint" style={{ marginBottom: 18 }}>
+              Te esperamos no dia 19 de Setembro. Se precisar, as alterações ainda podem ser feitas até o dia 28 de agosto.
+            </p>
+            <div className="modal-actions">
+              <button className="btn btn-primary" onClick={() => setShowThanksModal(false)}>
+                Fechar
+              </button>
+            </div>
           </div>
         </div>
       )}
