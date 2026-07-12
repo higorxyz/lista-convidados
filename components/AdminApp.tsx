@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { AttendanceStatus, DashboardStats, HistoryEntry, Invite, Person } from "@/lib/types";
 
 type Tab = "dashboard" | "invites";
-
 function formatWhatsapp(digits: string): string {
   if (!digits) return "";
   const local = digits.startsWith("55") ? digits.slice(2) : digits;
@@ -15,15 +14,14 @@ function formatWhatsapp(digits: string): string {
   return digits;
 }
 
-function formatDate(ts: number): string {
-  return new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+function formatWhatsappLink(digits: string): string {
+  const cleanDigits = digits.replace(/\D/g, "");
+  const normalized = cleanDigits.startsWith("55") ? cleanDigits : `55${cleanDigits}`;
+  return `https://wa.me/${normalized}`;
 }
 
-function parsePeopleTextarea(value: string): string[] {
-  return value
-    .split(/\r?\n/)
-    .map((v) => v.trim())
-    .filter(Boolean);
+function formatDate(ts: number): string {
+  return new Date(ts).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
 }
 
 const STATUS_TEXT: Record<AttendanceStatus, string> = {
@@ -32,23 +30,65 @@ const STATUS_TEXT: Record<AttendanceStatus, string> = {
   declined: "Não vai"
 };
 
+type NewPersonRow = { id: string; name: string; isChild: boolean };
+
+type NewPeopleSummary = {
+  total: number;
+  adults: number;
+  children: number;
+};
+
+function makeRowId(): string {
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function summarizeNewPeople(people: NewPersonRow[]): NewPeopleSummary {
+  const summary: NewPeopleSummary = { total: 0, adults: 0, children: 0 };
+
+  for (const person of people) {
+    if (!person.name.trim()) continue;
+    summary.total += 1;
+    if (person.isChild) summary.children += 1;
+    else summary.adults += 1;
+  }
+
+  return summary;
+}
+
 function buildStatsFromInvites(invites: Invite[]): DashboardStats {
   const stats: DashboardStats = {
     totalPeople: 0,
     totalInvites: invites.length,
     confirmed: 0,
     pending: 0,
-    declined: 0
+    declined: 0,
+    totalChildren: 0,
+    childConfirmed: 0,
+    childPending: 0,
+    childDeclined: 0,
+    invitesWithChildren: 0,
+    averagePeoplePerInvite: 0
   };
 
   for (const invite of invites) {
+    const hasChildren = invite.people.some((person) => person.isChild);
+    if (hasChildren) stats.invitesWithChildren += 1;
+
     for (const person of invite.people) {
       stats.totalPeople += 1;
+      if (person.isChild) {
+        stats.totalChildren += 1;
+        if (person.status === "confirmed") stats.childConfirmed += 1;
+        else if (person.status === "declined") stats.childDeclined += 1;
+        else stats.childPending += 1;
+      }
       if (person.status === "confirmed") stats.confirmed += 1;
       else if (person.status === "declined") stats.declined += 1;
       else stats.pending += 1;
     }
   }
+
+  stats.averagePeoplePerInvite = stats.totalInvites > 0 ? Number((stats.totalPeople / stats.totalInvites).toFixed(1)) : 0;
 
   return stats;
 }
@@ -68,9 +108,11 @@ export default function AdminApp() {
 
   const [newResponsible, setNewResponsible] = useState("");
   const [newWhatsapp, setNewWhatsapp] = useState("");
-  const [newPeople, setNewPeople] = useState("");
+  const [newPeople, setNewPeople] = useState<NewPersonRow[]>([{ id: makeRowId(), name: "", isChild: false }]);
+  const [draggingNewPersonId, setDraggingNewPersonId] = useState<string | null>(null);
   const [formError, setFormError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [collapsedInvites, setCollapsedInvites] = useState<Record<string, boolean>>({});
 
   const [editTarget, setEditTarget] = useState<Invite | null>(null);
   const [editResponsible, setEditResponsible] = useState("");
@@ -81,6 +123,12 @@ export default function AdminApp() {
   const [deleteTarget, setDeleteTarget] = useState<Invite | null>(null);
   const [addPersonTarget, setAddPersonTarget] = useState<Invite | null>(null);
   const [addPersonName, setAddPersonName] = useState("");
+  const [addPersonIsChild, setAddPersonIsChild] = useState(false);
+  const [editPersonTarget, setEditPersonTarget] = useState<{ invite: Invite; person: Person } | null>(null);
+  const [editPersonName, setEditPersonName] = useState("");
+  const [editPersonIsChild, setEditPersonIsChild] = useState(false);
+  const [editPersonError, setEditPersonError] = useState("");
+  const [savingPersonEdit, setSavingPersonEdit] = useState(false);
   const [removePersonTarget, setRemovePersonTarget] = useState<{ invite: Invite; person: Person } | null>(null);
   const [historyTarget, setHistoryTarget] = useState<Invite | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -121,6 +169,19 @@ export default function AdminApp() {
       setStats(buildStatsFromInvites(nextInvites));
       return nextInvites;
     });
+    setCollapsedInvites((current) => {
+      if (!current[inviteId]) return current;
+      const next = { ...current };
+      delete next[inviteId];
+      return next;
+    });
+  }
+
+  function toggleInviteCollapse(inviteId: string) {
+    setCollapsedInvites((current) => ({
+      ...current,
+      [inviteId]: !current[inviteId]
+    }));
   }
 
   async function loadAll(options?: { withLoader?: boolean }) {
@@ -167,7 +228,6 @@ export default function AdminApp() {
   }
 
   async function handleCreateInvite() {
-    const peopleNames = parsePeopleTextarea(newPeople);
     if (!newResponsible.trim()) {
       setFormError("Informe o nome do responsável.");
       return;
@@ -176,7 +236,11 @@ export default function AdminApp() {
       setFormError("Informe um WhatsApp válido, com DDD.");
       return;
     }
-    if (peopleNames.length === 0) {
+    const people = newPeople
+      .map((person) => ({ name: person.name.trim(), isChild: person.isChild }))
+      .filter((person) => person.name);
+
+    if (people.length === 0) {
       setFormError("Adicione ao menos uma pessoa (um nome por linha).");
       return;
     }
@@ -186,7 +250,7 @@ export default function AdminApp() {
       const res = await fetch("/api/admin/invites", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ responsibleName: newResponsible, whatsapp: newWhatsapp, peopleNames })
+        body: JSON.stringify({ responsibleName: newResponsible, whatsapp: newWhatsapp, people })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -195,7 +259,7 @@ export default function AdminApp() {
       }
       setNewResponsible("");
       setNewWhatsapp("");
-      setNewPeople("");
+      setNewPeople([{ id: makeRowId(), name: "", isChild: false }]);
       if (data.invite) mergeInvite(data.invite);
       else await loadAll({ withLoader: false });
     } finally {
@@ -203,11 +267,87 @@ export default function AdminApp() {
     }
   }
 
+  function updateNewPersonRow(id: string, patch: Partial<NewPersonRow>) {
+    setNewPeople((current) => current.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  }
+
+  function addNewPersonRow() {
+    setNewPeople((current) => [...current, { id: makeRowId(), name: "", isChild: false }]);
+  }
+
+  function removeNewPersonRow(id: string) {
+    setNewPeople((current) => (current.length > 1 ? current.filter((row) => row.id !== id) : current));
+  }
+
+  function moveNewPersonRow(activeId: string, overId: string) {
+    setNewPeople((current) => {
+      const fromIndex = current.findIndex((row) => row.id === activeId);
+      const toIndex = current.findIndex((row) => row.id === overId);
+      if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return current;
+
+      const next = [...current];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  }
+
+  function shiftNewPersonRow(id: string, direction: -1 | 1) {
+    setNewPeople((current) => {
+      const index = current.findIndex((row) => row.id === id);
+      const targetIndex = index + direction;
+      if (index === -1 || targetIndex < 0 || targetIndex >= current.length) return current;
+
+      const next = [...current];
+      const [moved] = next.splice(index, 1);
+      next.splice(targetIndex, 0, moved);
+      return next;
+    });
+  }
+
+  const newPeopleSummary = summarizeNewPeople(newPeople);
+
   function openEditModal(invite: Invite) {
     setEditTarget(invite);
     setEditResponsible(invite.responsibleName);
     setEditWhatsapp(formatWhatsapp(invite.whatsapp));
     setEditError("");
+  }
+
+  function openPersonEditModal(invite: Invite, person: Person) {
+    setEditPersonTarget({ invite, person });
+    setEditPersonName(person.name);
+    setEditPersonIsChild(!!person.isChild);
+    setEditPersonError("");
+  }
+
+  async function savePersonEdit() {
+    if (!editPersonTarget) return;
+    if (!editPersonName.trim()) {
+      setEditPersonError("Informe o nome da pessoa.");
+      return;
+    }
+
+    setSavingPersonEdit(true);
+    setEditPersonError("");
+    try {
+      const res = await fetch(`/api/admin/invites/${editPersonTarget.invite.id}/people/${editPersonTarget.person.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editPersonName, isChild: editPersonIsChild })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setEditPersonError(data.error || "Não foi possível salvar a pessoa.");
+        return;
+      }
+
+      setEditPersonTarget(null);
+      if (data.invite) mergeInvite(data.invite);
+      else await loadAll({ withLoader: false });
+    } finally {
+      setSavingPersonEdit(false);
+    }
   }
 
   async function saveEdit() {
@@ -258,11 +398,12 @@ export default function AdminApp() {
     const res = await fetch(`/api/admin/invites/${addPersonTarget.id}/people`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: addPersonName })
+      body: JSON.stringify({ name: addPersonName, isChild: addPersonIsChild })
     });
     const data = await res.json().catch(() => ({}));
     setAddPersonTarget(null);
     setAddPersonName("");
+    setAddPersonIsChild(false);
     if (res.ok && data.invite) mergeInvite(data.invite);
     else await loadAll({ withLoader: false });
   }
@@ -377,14 +518,50 @@ export default function AdminApp() {
                 <div className="stat-label">Não irão</div>
                 <div className="stat-value">{stats.declined}</div>
               </div>
-            </div>
-            <div className="card">
-              <div className="section-note" style={{ marginBottom: 4 }}>
-                {stats.totalInvites} convite{stats.totalInvites !== 1 ? "s" : ""} cadastrado
-                {stats.totalInvites !== 1 ? "s" : ""} · {confirmedPct}% confirmado
+              <div className="stat-card child">
+                <div className="stat-label">Crianças</div>
+                <div className="stat-value">{stats.totalChildren}</div>
               </div>
-              <div className="progress-bar">
-                <div className="progress-bar-fill" style={{ width: `${confirmedPct}%` }} />
+              <div className="stat-card">
+                <div className="stat-label">Convites com crianças</div>
+                <div className="stat-value">{stats.invitesWithChildren}</div>
+              </div>
+            </div>
+            <div className="dashboard-secondary-grid">
+              <div className="card">
+                <div className="section-note" style={{ marginBottom: 4 }}>
+                  {stats.totalInvites} convite{stats.totalInvites !== 1 ? "s" : ""} cadastrado
+                  {stats.totalInvites !== 1 ? "s" : ""} · {confirmedPct}% confirmado
+                </div>
+                <div className="progress-bar">
+                  <div className="progress-bar-fill" style={{ width: `${confirmedPct}%` }} />
+                </div>
+              </div>
+              <div className="card">
+                <div className="section-note" style={{ marginBottom: 4 }}>Média de pessoas por convite</div>
+                <div className="stat-value" style={{ fontSize: 36, lineHeight: 1 }}>
+                  {stats.averagePeoplePerInvite.toFixed(1)}
+                </div>
+                <div className="section-note" style={{ marginTop: 8 }}>
+                  
+                </div>
+              </div>
+              <div className="card">
+                <div className="section-note" style={{ marginBottom: 4 }}>Crianças por status</div>
+                <div className="timeline" style={{ gap: 8 }}>
+                  <div className="timeline-entry" style={{ padding: "6px 0" }}>
+                    <div className="timeline-text">Confirmadas</div>
+                    <div className="timeline-date">{stats.childConfirmed}</div>
+                  </div>
+                  <div className="timeline-entry" style={{ padding: "6px 0" }}>
+                    <div className="timeline-text">Pendentes</div>
+                    <div className="timeline-date">{stats.childPending}</div>
+                  </div>
+                  <div className="timeline-entry" style={{ padding: "6px 0" }}>
+                    <div className="timeline-text">Não irão</div>
+                    <div className="timeline-date">{stats.childDeclined}</div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -405,13 +582,90 @@ export default function AdminApp() {
                 </div>
               </div>
               <div className="field">
-                <label>Pessoas vinculadas (uma por linha)</label>
-                <textarea
-                  placeholder={"Maria Souza\nJoão Silva\nAna Silva"}
-                  value={newPeople}
-                  onChange={(e) => setNewPeople(e.target.value)}
-                  style={{ minHeight: 90 }}
-                />
+                <label>Pessoas vinculadas</label>
+                <div className="people-summary">
+                  <div className="people-summary-item">
+                    <span>Total</span>
+                    <strong>{newPeopleSummary.total}</strong>
+                  </div>
+                  <div className="people-summary-item">
+                    <span>Adultos</span>
+                    <strong>{newPeopleSummary.adults}</strong>
+                  </div>
+                  <div className="people-summary-item">
+                    <span>Crianças</span>
+                    <strong>{newPeopleSummary.children}</strong>
+                  </div>
+                </div>
+                <div className="people-builder">
+                  {newPeople.map((person, index) => (
+                      <div
+                        className={`people-builder-row ${draggingNewPersonId === person.id ? "dragging" : ""}`}
+                        key={person.id}
+                        draggable
+                        onDragStart={(e) => {
+                          setDraggingNewPersonId(person.id);
+                          e.dataTransfer.effectAllowed = "move";
+                          e.dataTransfer.setData("text/plain", person.id);
+                        }}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          const activeId = e.dataTransfer.getData("text/plain") || draggingNewPersonId;
+                          if (activeId) moveNewPersonRow(activeId, person.id);
+                          setDraggingNewPersonId(null);
+                        }}
+                        onDragEnd={() => setDraggingNewPersonId(null)}
+                      >
+                        <button
+                          type="button"
+                          className="drag-handle"
+                          aria-label="Reordenar pessoa"
+                          title="Arraste para reordenar"
+                          draggable
+                          onDragStart={(e) => {
+                            setDraggingNewPersonId(person.id);
+                            e.dataTransfer.effectAllowed = "move";
+                            e.dataTransfer.setData("text/plain", person.id);
+                          }}
+                          onDragEnd={() => setDraggingNewPersonId(null)}
+                        >
+                          ⋮⋮
+                        </button>
+                      <input
+                        type="text"
+                        placeholder={`Pessoa ${index + 1}`}
+                        value={person.name}
+                        onChange={(e) => updateNewPersonRow(person.id, { name: e.target.value })}
+                      />
+                      <label className="checkbox-row checkbox-inline">
+                        <input
+                          type="checkbox"
+                          checked={person.isChild}
+                          onChange={(e) => updateNewPersonRow(person.id, { isChild: e.target.checked })}
+                        />
+                        <span>Criança</span>
+                      </label>
+                      <div className="row-reorder-actions">
+                        <button type="button" className="mini-btn" onClick={() => shiftNewPersonRow(person.id, -1)}>
+                          ↑
+                        </button>
+                        <button type="button" className="mini-btn" onClick={() => shiftNewPersonRow(person.id, 1)}>
+                          ↓
+                        </button>
+                      </div>
+                      <button className="mini-btn danger" type="button" onClick={() => removeNewPersonRow(person.id)}>
+                        Remover
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button className="btn btn-ghost" type="button" onClick={addNewPersonRow} style={{ marginTop: 10, width: "auto" }}>
+                  + Adicionar pessoa
+                </button>
+                <div className="section-note" style={{ marginTop: 10, textTransform: "none", letterSpacing: 0, fontFamily: "var(--font-body)" }}>
+                  Marque se a pessoa é criança já na criação do convite.
+                </div>
               </div>
               {formError && <div className="error-msg">{formError}</div>}
               <button className="btn btn-primary" onClick={handleCreateInvite} disabled={creating} style={{ width: "auto" }}>
@@ -427,8 +681,28 @@ export default function AdminApp() {
                   <div className="admin-item-top">
                     <div className="admin-item-main">
                       <div className="name">{invite.responsibleName}</div>
-                      <div className="desc">{formatWhatsapp(invite.whatsapp)}</div>
+                      <a className="desc whatsapp-link" href={formatWhatsappLink(invite.whatsapp)} target="_blank" rel="noreferrer">
+                        {formatWhatsapp(invite.whatsapp)}
+                      </a>
                     </div>
+                    <button
+                      className="invite-toggle"
+                      type="button"
+                      aria-label={collapsedInvites[invite.id] ? "Expandir convite" : "Recolher convite"}
+                      aria-expanded={!collapsedInvites[invite.id]}
+                      onClick={() => toggleInviteCollapse(invite.id)}
+                    >
+                      <svg
+                        className={`invite-toggle-icon ${collapsedInvites[invite.id] ? "is-collapsed" : ""}`}
+                        aria-hidden="true"
+                        viewBox="0 0 24 24"
+                      >
+                        <path d="M4 9l8 8 8-8" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className={`invite-body ${collapsedInvites[invite.id] ? "is-collapsed" : ""}`} aria-hidden={collapsedInvites[invite.id]}>
                     <div className="admin-item-actions">
                       <button className="btn btn-ghost" onClick={() => openEditModal(invite)}>
                         Editar
@@ -438,6 +712,7 @@ export default function AdminApp() {
                         onClick={() => {
                           setAddPersonTarget(invite);
                           setAddPersonName("");
+                          setAddPersonIsChild(false);
                         }}
                       >
                         + Pessoa
@@ -449,29 +724,37 @@ export default function AdminApp() {
                         Excluir
                       </button>
                     </div>
-                  </div>
 
-                  <div className="admin-people-list">
-                    {invite.people.map((person) => (
-                      <div className="admin-person-row" key={person.id}>
-                        <span className="p-name">{person.name}</span>
-                        <div className="p-actions">
-                          <span className={`status-badge ${person.status}`}>{STATUS_TEXT[person.status]}</span>
-                          <button className="mini-btn" onClick={() => overridePersonStatus(invite, person, "confirmed")}>
-                            Confirmar
-                          </button>
-                          <button className="mini-btn" onClick={() => overridePersonStatus(invite, person, "declined")}>
-                            Não vai
-                          </button>
-                          <button className="mini-btn" onClick={() => overridePersonStatus(invite, person, "pending")}>
-                            Pendente
-                          </button>
-                          <button className="mini-btn danger" onClick={() => setRemovePersonTarget({ invite, person })}>
-                            Remover
-                          </button>
+                    <div className="admin-people-list">
+                      {invite.people.map((person) => (
+                        <div className="admin-person-row" key={person.id}>
+                          <div className="admin-person-main">
+                            <span className="p-name">{person.name}</span>
+                            <div className="admin-person-badges">
+                              <span className={`status-badge ${person.status}`}>{STATUS_TEXT[person.status]}</span>
+                              {person.isChild && <span className="child-badge">Criança</span>}
+                            </div>
+                          </div>
+                          <div className="p-actions">
+                            <button className="mini-btn" onClick={() => openPersonEditModal(invite, person)}>
+                              Editar
+                            </button>
+                            <button className="mini-btn" onClick={() => overridePersonStatus(invite, person, "confirmed") }>
+                              Confirmar
+                            </button>
+                            <button className="mini-btn" onClick={() => overridePersonStatus(invite, person, "declined") }>
+                              Não vai
+                            </button>
+                            <button className="mini-btn" onClick={() => overridePersonStatus(invite, person, "pending") }>
+                              Pendente
+                            </button>
+                            <button className="mini-btn danger" onClick={() => setRemovePersonTarget({ invite, person })}>
+                              Remover
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -525,12 +808,49 @@ export default function AdminApp() {
                 onKeyDown={(e) => e.key === "Enter" && confirmAddPerson()}
               />
             </div>
+            <label className="checkbox-row">
+              <input type="checkbox" checked={addPersonIsChild} onChange={(e) => setAddPersonIsChild(e.target.checked)} />
+              <span>Essa pessoa é criança</span>
+            </label>
             <div className="modal-actions">
               <button className="btn btn-ghost" onClick={() => setAddPersonTarget(null)}>
                 Cancelar
               </button>
               <button className="btn btn-primary" onClick={confirmAddPerson}>
                 Adicionar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editPersonTarget && (
+        <div className="overlay" onClick={(e) => e.target === e.currentTarget && setEditPersonTarget(null)}>
+          <div className="modal">
+            <button className="close-x" onClick={() => setEditPersonTarget(null)}>
+              &times;
+            </button>
+            <h3>Editar pessoa</h3>
+            <p className="hint">Convite de {editPersonTarget.invite.responsibleName}</p>
+            <div className="field">
+              <label>Nome completo</label>
+              <input type="text" value={editPersonName} onChange={(e) => setEditPersonName(e.target.value)} />
+            </div>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={editPersonIsChild}
+                onChange={(e) => setEditPersonIsChild(e.target.checked)}
+              />
+              <span>Essa pessoa é criança</span>
+            </label>
+            {editPersonError && <div className="error-msg">{editPersonError}</div>}
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => setEditPersonTarget(null)}>
+                Cancelar
+              </button>
+              <button className="btn btn-primary" onClick={savePersonEdit} disabled={savingPersonEdit}>
+                {savingPersonEdit ? "Salvando…" : "Salvar"}
               </button>
             </div>
           </div>

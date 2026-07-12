@@ -32,6 +32,7 @@ function normalizePerson(raw: Partial<Person>): Person {
     id: String(raw.id || makePersonId()),
     name: String(raw.name || "").trim(),
     status: normalizeStatus(raw.status),
+    isChild: raw.isChild === true,
     updatedAt: typeof raw.updatedAt === "number" ? raw.updatedAt : Date.now()
   };
 }
@@ -56,8 +57,8 @@ function seedInvites(): Invite[] {
       responsibleName: "Convite de Exemplo",
       whatsapp: "5511999998888",
       people: [
-        { id: makePersonId(), name: "Convite de Exemplo", status: "pending", updatedAt: now },
-        { id: makePersonId(), name: "Acompanhante de Exemplo", status: "pending", updatedAt: now }
+        { id: makePersonId(), name: "Convite de Exemplo", status: "pending", isChild: false, updatedAt: now },
+        { id: makePersonId(), name: "Acompanhante de Exemplo", status: "pending", isChild: false, updatedAt: now }
       ],
       createdAt: now,
       updatedAt: now
@@ -101,12 +102,26 @@ export async function deleteInvite(id: string): Promise<void> {
   await kv.del(`${HISTORY_LIST_PREFIX}${id}`);
 }
 
-export async function addInvite(input: { responsibleName: string; whatsapp: string; peopleNames: string[] }): Promise<Invite> {
+export async function addInvite(
+  input:
+    | { responsibleName: string; whatsapp: string; peopleNames: string[] }
+    | { responsibleName: string; whatsapp: string; people: Array<{ name: string; isChild: boolean }> }
+): Promise<Invite> {
   const now = Date.now();
-  const people: Person[] = input.peopleNames
-    .map((n) => n.trim())
-    .filter(Boolean)
-    .map((name) => ({ id: makePersonId(), name, status: "pending" as AttendanceStatus, updatedAt: now }));
+  const peopleInput = "people" in input ? input.people : input.peopleNames.map((name) => ({ name, isChild: false }));
+  const people: Person[] = peopleInput
+    .map((person) => ({
+      name: String(person.name || "").trim(),
+      isChild: person.isChild === true
+    }))
+    .filter((person) => person.name)
+    .map((person) => ({
+      id: makePersonId(),
+      name: person.name,
+      status: "pending" as AttendanceStatus,
+      isChild: person.isChild,
+      updatedAt: now
+    }));
 
   const invite: Invite = {
     id: makeInviteId(),
@@ -137,15 +152,42 @@ export async function updateInviteDetails(
   return updated;
 }
 
-export async function addPerson(inviteId: string, name: string): Promise<Invite | null> {
+export async function addPerson(inviteId: string, name: string, isChild = false): Promise<Invite | null> {
   const current = await getInvite(inviteId);
   if (!current) return null;
   const trimmed = name.trim();
   if (!trimmed) return current;
-  const person: Person = { id: makePersonId(), name: trimmed, status: "pending", updatedAt: Date.now() };
+  const person: Person = { id: makePersonId(), name: trimmed, status: "pending", isChild, updatedAt: Date.now() };
   const updated: Invite = { ...current, people: [...current.people, person], updatedAt: Date.now() };
   await saveInvite(updated);
   return updated;
+}
+
+export async function setPersonDetails(
+  inviteId: string,
+  personId: string,
+  input: { name: string; isChild: boolean }
+): Promise<{ invite: Invite; person: Person } | null> {
+  const current = await getInvite(inviteId);
+  if (!current) return null;
+
+  let updatedPerson: Person | null = null;
+  const people = current.people.map((person) => {
+    if (person.id !== personId) return person;
+    updatedPerson = {
+      ...person,
+      name: input.name.trim(),
+      isChild: input.isChild,
+      updatedAt: Date.now()
+    };
+    return updatedPerson;
+  });
+
+  if (!updatedPerson) return null;
+
+  const updated: Invite = { ...current, people, updatedAt: Date.now() };
+  await saveInvite(updated);
+  return { invite: updated, person: updatedPerson };
 }
 
 export async function removePerson(inviteId: string, personId: string): Promise<Invite | null> {

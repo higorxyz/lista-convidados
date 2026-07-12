@@ -4,6 +4,14 @@ export interface Person {
   id: string;
   name: string;
   status: AttendanceStatus;
+  isChild: boolean;
+  updatedAt: number;
+}
+
+export interface GuestPerson {
+  id: string;
+  name: string;
+  status: AttendanceStatus;
   updatedAt: number;
 }
 
@@ -28,7 +36,7 @@ export interface HistoryEntry {
 // Never includes the WhatsApp number or anything about other invites.
 export interface GuestInviteView {
   responsibleName: string;
-  people: Person[];
+  people: GuestPerson[];
   deadline: string;
   deadlinePassed: boolean;
 }
@@ -39,4 +47,10 @@ export interface DashboardStats {
   confirmed: number;
   pending: number;
   declined: number;
+  totalChildren: number;
+  childConfirmed: number;
+  childPending: number;
+  childDeclined: number;
+  invitesWithChildren: number;
+  averagePeoplePerInvite: number;
 }

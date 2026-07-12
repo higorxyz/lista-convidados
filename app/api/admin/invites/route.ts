@@ -22,6 +22,18 @@ function parsePeopleNames(value: unknown): string[] {
   return [];
 }
 
+function parsePeople(value: unknown): Array<{ name: string; isChild: boolean }> {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => ({
+        name: typeof item?.name === "string" ? item.name.trim() : String(item?.name || "").trim(),
+        isChild: item?.isChild === true
+      }))
+      .filter((item) => item.name);
+  }
+  return [];
+}
+
 export async function GET() {
   if (!requireAdmin()) {
     return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
@@ -39,6 +51,7 @@ export async function POST(req: NextRequest) {
   const whatsapp = typeof body?.whatsapp === "string" ? body.whatsapp.trim() : "";
   const digits = whatsapp.replace(/\D/g, "");
   const peopleNames = parsePeopleNames(body?.peopleNames ?? body?.people);
+  const people = parsePeople(body?.people);
 
   if (!responsibleName) {
     return NextResponse.json({ error: "Nome do responsável é obrigatório." }, { status: 400 });
@@ -46,10 +59,10 @@ export async function POST(req: NextRequest) {
   if (digits.length < 10) {
     return NextResponse.json({ error: "Informe um WhatsApp válido, com DDD." }, { status: 400 });
   }
-  if (peopleNames.length === 0) {
+  if (people.length === 0 && peopleNames.length === 0) {
     return NextResponse.json({ error: "Adicione ao menos uma pessoa ao convite." }, { status: 400 });
   }
 
-  const invite = await addInvite({ responsibleName, whatsapp: digits, peopleNames });
+  const invite = people.length > 0 ? await addInvite({ responsibleName, whatsapp: digits, people }) : await addInvite({ responsibleName, whatsapp: digits, peopleNames });
   return NextResponse.json({ invite });
 }

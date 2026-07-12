@@ -2,9 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { addHistoryEntry, getInvite, setPeopleStatuses } from "@/lib/invites";
 import { verifyInviteToken } from "@/lib/guestToken";
 import { isDeadlinePassed, RSVP_DEADLINE_LABEL } from "@/lib/deadline";
-import { AttendanceStatus, GuestInviteView } from "@/lib/types";
+import { AttendanceStatus, GuestInviteView, GuestPerson } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+function toGuestPeople(people: Array<{ id: string; name: string; status: AttendanceStatus; updatedAt: number }>): GuestPerson[] {
+  return people.map((person) => ({
+    id: person.id,
+    name: person.name,
+    status: person.status,
+    updatedAt: person.updatedAt
+  }));
+}
 
 function extractToken(req: NextRequest): string | null {
   const header = req.headers.get("authorization");
@@ -32,7 +41,7 @@ export async function GET(req: NextRequest) {
 
   const view: GuestInviteView = {
     responsibleName: invite.responsibleName,
-    people: invite.people,
+    people: toGuestPeople(invite.people),
     deadline: RSVP_DEADLINE_LABEL,
     deadlinePassed: isDeadlinePassed()
   };
@@ -108,7 +117,7 @@ export async function PATCH(req: NextRequest) {
 
   const view: GuestInviteView = {
     responsibleName: result.invite.responsibleName,
-    people: result.invite.people,
+    people: toGuestPeople(result.invite.people),
     deadline: RSVP_DEADLINE_LABEL,
     deadlinePassed: isDeadlinePassed()
   };
