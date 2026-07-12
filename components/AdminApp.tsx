@@ -274,6 +274,9 @@ export default function AdminApp() {
           <button className="btn btn-primary" onClick={handleLogin} disabled={loggingIn}>
             {loggingIn ? "Entrando…" : "Entrar"}
           </button>
+          <a className="btn btn-ghost" href="/" style={{ display: "block", marginTop: 10, textAlign: "center", textDecoration: "none" }}>
+            Voltar para a tela inicial
+          </a>
         </div>
       </div>
     );
