@@ -12,8 +12,13 @@ export default function HomePage() {
         <p className="subtitle">Confirmação de presença</p>
         <div className="divider" />
         <p className="intro">
-          Ficaremos muito felizes em ter vocês com a gente nesse dia. Para organizar tudo com carinho, pedimos que
-          confirmem a presença de cada pessoa do convite até 28 de agosto.
+          Será uma alegria ter vocês conosco nesse dia tão especial! Pedimos que
+          confirmem a presença de cada pessoa do convite até <strong>28 de agosto</strong>,
+          para que possamos finalizar todos os preparativos.
+          <br />
+          <br />
+          Após essa data, iniciaremos a etapa final da organização e, por isso, não
+          será mais possível aceitar novas confirmações.
         </p>
       </div>
 
